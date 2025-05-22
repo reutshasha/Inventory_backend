@@ -46,7 +46,7 @@ async def startup_event():
 async def shutdown_event():
     # סוגר את חיבור ה-MongoDB כשהאפליקציה נכבית
     app.mongodb_client.close()
-    print("FastAPI application shutdown. MongoDB connection closed.")
+    print("🛑 Disconnected from MongoDB.")
 
 app.add_middleware(
     CORSMiddleware,
@@ -59,12 +59,17 @@ app.add_middleware(
 
 
 # פונקציה ליצירת טוקן
+
 @app.post("/api/token")
 async def create_token(user: UserLogin):
     print("UserLogin!")
+    users_collection = app.mongodb_db["users"] # Access the users collection
 
-    if user.email in users_db and users_db[user.email]["password"] == user.password:
-        token = jwt.encode({"email": user.email, "role": users_db[user.email]["role"]}, SECRET_KEY, algorithm=ALGORITHM)
+    # Find the user in MongoDB
+    db_user = await users_collection.find_one({"email": user.email})
+
+    if db_user and db_user["password"] == user.password:
+        token = jwt.encode({"email": user.email, "role": db_user["role"]}, SECRET_KEY, algorithm=ALGORITHM)
         return {"token": token}
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -84,83 +89,62 @@ async def get_sensitive_data(request: Request):
         raise HTTPException(status_code=403, detail="Invalid token")
 
 
-# Endpoint של התחברות
-# @app.post("/api/login")
-# async def login(user: UserLogin):
-#     # כאן נעשה את כל ההתחברות הפגומה
-#     # POC של SQL Injection
-#     if user.email in users_db and users_db[user.email]["password"] == user.password:
-#         return {"message": "Login successful", "role": users_db[user.email]["role"]}
-#     raise HTTPException(status_code=401, detail="Invalid credentials")
+@app.post("/api/login_safe")
+async def login(user: UserLogin):
+    print(f"\n--- Attempting login for email: {user.email} ---")
+    users_collection = app.mongodb_db["users"]
 
-
-
-@app.post("/api/vuln-login")
-async def vuln_login(user: UserLogin):
     try:
+        db_user = await users_collection.find_one({"email": user.email})
+        print(f"DB user found: {db_user}")
 
-        email = user.email
-        password = user.password
+        if not db_user:
+            print("User not found!")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password" 
+            )
 
-        users_collection = app.mongodb_db["users"]
+        if db_user["password"] == user.password:
+            print("Password match!")
+            token_payload = {"email": db_user["email"], "role": db_user.get("role", "user")}
+            token = jwt.encode(token_payload, SECRET_KEY, algorithm=ALGORITHM)
+            return {"message": "Login successful", "token": token}
+        else:
+            print("Password mismatch!")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid email or password"
+            )
 
-        print("Email:", email)
-        print("Password:", password)
-        print("Users collection (MotorCollection object):", users_collection)
-
-        user_in_db = await users_collection.find_one({"email": email})
-        print(f"User found in DB: {user_in_db}")
-
-        if user_in_db:
-            if password == "' OR '1'='1'":
-                response = JSONResponse(content={"message": "Login successful (bypassed with SQL Injection!)"})
-                response.set_cookie(key="session_id", value="injected_admin_token", httponly=True)
-                return response
-            elif user_in_db.get("password") == password:
-                response = JSONResponse(content={"message": "Login successful"})
-                response.set_cookie(key="session_id", value="regular_user_token", httponly=True)
-                return response
-
-        raise HTTPException(status_code=401, detail="Invalid credentials") 
-
+    except HTTPException as http_exc:
+        raise http_exc
     except Exception as e:
-        print(f"ERROR in /api/vuln-login: {type(e).__name__}: {e}")
-        raise HTTPException(status_code=500, detail="An internal server error occurred. Check server logs for details.")
-    
-# # TODO:FIX!
-# @app.post("/api/vuln-login")
-# async def vuln_login(user: UserLogin):
-#     email = user.email
-#     password = user.password
+        print(f"An unexpected error occurred during login: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Internal server error: {str(e)}"
+        )
 
-#     users_collection = app.mongodb["users"] 
+@app.post("/api/login")
+async def vuln_login(payload: dict):
+    print(f"Payload: {payload}")
+    email = payload.get("email")
+    password = payload.get("password")
 
-#     # שאילתת MongoDB נכונה לחיפוש משתמש
-#     user_in_db = await users_collection.find_one({"email": email})
-#     print(f"User found in DB: {user_in_db}")
+    users_collection = app.mongodb_db["users"]
 
-# TODO:query injection in mongoDB 
-    # queryEmail = db.users_db.find({ email: user.email, password: user.password })
-    # collection = db["users_db"]
+    try:
+        db_user = await users_collection.find_one({"email": email, "password": password})
+        print(f"User found: {db_user}")
 
-    # user_in_db = await collection.find_one({"email": user.email, "password": user.password})
-
-    # print(user_in_db)
-
-
-    # user_in_db = await collection.find_one({"email": email})
-    # user_in_db = await collection.find_one(queryEmail)
-    # print(user_in_db)
-    # if password == "' OR '1'='1":
-    #     return {"message": "Login successful (injection bypass)", "role": "admin"}
-    
-    # if not user_in_db:
-    #     raise HTTPException(status_code=401, detail="User not found")
-
-    # if user_in_db["password"] != password:
-    #     raise HTTPException(status_code=401, detail="Wrong password")
-
-    # return {"message": "Login successful", "role": user_in_db["role"]}
+        if db_user:
+            token = jwt.encode({"email": db_user["email"], "role": db_user["role"]}, SECRET_KEY, algorithm=ALGORITHM)
+            return {"message": "Login successful", "token": token}
+        else:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal error: {str(e)}")
 
 
 # XSS Vulnerable endpoint

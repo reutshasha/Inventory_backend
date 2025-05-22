@@ -13,6 +13,7 @@ async def init_db_mongodb():
         {'email': 'user@example.com', 'password': 'password', 'role': 'user'}
     ]
     await users_collection.insert_many(users_to_insert)
+    
     print("✅ MongoDB initialized with user data.")
 
 
